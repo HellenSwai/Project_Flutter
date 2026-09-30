@@ -11,14 +11,19 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> {
   final supabase = Supabase.instance.client;
 
+  bool loading = true;
+
   int totalProducts = 0;
   int lowStock = 0;
-  double stockValue = 0;
-  double totalCostValue = 0;
+
+  double stockSellingValue = 0;
+  double stockBuyingValue = 0;
   double potentialProfit = 0;
 
-  bool loading = true;
-  String? errorMessage;
+  // Controls which report is opened
+  String? expandedReport;
+
+  List<Map<String, dynamic>> products = [];
 
   @override
   void initState() {
@@ -30,43 +35,48 @@ class _ReportsScreenState extends State<ReportsScreen> {
     try {
       setState(() {
         loading = true;
-        errorMessage = null;
       });
 
-      final products = await supabase
+      final data = await supabase
           .from('products')
           .select(
-            'name, buying_price, selling_price, quantity, created_at',
+            'id, name, buying_price, selling_price, quantity',
           );
 
-      int productCount = products.length;
-      int lowStockCount = 0;
-      double sellingValue = 0;
-      double costValue = 0;
+      final List<Map<String, dynamic>> productList =
+          List<Map<String, dynamic>>.from(data);
 
-      for (final product in products) {
-        final quantity = (product['quantity'] as num?)?.toInt() ?? 0;
-        final buyingPrice =
+      double sellingValue = 0;
+      double buyingValue = 0;
+
+      for (final product in productList) {
+        final double buying =
             (product['buying_price'] as num?)?.toDouble() ?? 0;
-        final sellingPrice =
+
+        final double selling =
             (product['selling_price'] as num?)?.toDouble() ?? 0;
 
-        if (quantity <= 10) {
-          lowStockCount++;
-        }
+        final int quantity =
+            (product['quantity'] as num?)?.toInt() ?? 0;
 
-        sellingValue += sellingPrice * quantity;
-        costValue += buyingPrice * quantity;
+        buyingValue += buying * quantity;
+        sellingValue += selling * quantity;
       }
 
       if (!mounted) return;
 
       setState(() {
-        totalProducts = productCount;
-        lowStock = lowStockCount;
-        stockValue = sellingValue;
-        totalCostValue = costValue;
-        potentialProfit = sellingValue - costValue;
+        products = productList;
+        totalProducts = productList.length;
+        lowStock = productList.where((p) {
+          final quantity = (p['quantity'] as num?)?.toInt() ?? 0;
+          return quantity <= 10;
+        }).length;
+
+        stockSellingValue = sellingValue;
+        stockBuyingValue = buyingValue;
+        potentialProfit = sellingValue - buyingValue;
+
         loading = false;
       });
     } catch (e) {
@@ -74,58 +84,243 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
       setState(() {
         loading = false;
-        errorMessage = e.toString();
       });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error loading report: $e'),
+        ),
+      );
     }
   }
 
-  String formatMoney(double amount) {
-    return "TZS ${amount.toStringAsFixed(0)}";
+  void toggleReport(String report) {
+    setState(() {
+      if (expandedReport == report) {
+        expandedReport = null;
+      } else {
+        expandedReport = report;
+      }
+    });
+  }
+
+  String money(double amount) {
+    return 'TZS ${amount.toStringAsFixed(0)}';
   }
 
   Widget reportRow({
-    required IconData icon,
     required String title,
     required String value,
-    Color? valueColor,
+    required IconData icon,
+    required String reportKey,
   }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        vertical: 14,
+    final bool isExpanded = expandedReport == reportKey;
+
+    return Column(
+      children: [
+        InkWell(
+          onTap: () => toggleReport(reportKey),
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              vertical: 15,
+              horizontal: 10,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  icon,
+                  color: Colors.deepPurple,
+                  size: 27,
+                ),
+                const SizedBox(width: 14),
+
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.deepPurple,
+                  ),
+                ),
+
+                const SizedBox(width: 8),
+
+                Icon(
+                  isExpanded
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
+                  color: Colors.grey,
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        if (isExpanded) buildDetails(reportKey),
+
+        const Divider(height: 1),
+      ],
+    );
+  }
+
+  Widget buildDetails(String reportKey) {
+    if (products.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(20),
+        child: Text(
+          'No products available.',
+          style: TextStyle(color: Colors.grey),
+        ),
+      );
+    }
+
+    List<Map<String, dynamic>> displayedProducts = products;
+
+    // Low stock only
+    if (reportKey == 'lowStock') {
+      displayedProducts = products.where((product) {
+        final quantity =
+            (product['quantity'] as num?)?.toInt() ?? 0;
+
+        return quantity <= 10;
+      }).toList();
+
+      if (displayedProducts.isEmpty) {
+        return const Padding(
+          padding: EdgeInsets.all(20),
+          child: Text(
+            'No low stock products.',
+            style: TextStyle(
+              color: Colors.green,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+      }
+    }
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        children: [
+          for (final product in displayedProducts)
+            buildProductDetail(
+              product,
+              reportKey,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildProductDetail(
+    Map<String, dynamic> product,
+    String reportKey,
+  ) {
+    final String name = product['name']?.toString() ?? 'Unknown';
+
+    final double buying =
+        (product['buying_price'] as num?)?.toDouble() ?? 0;
+
+    final double selling =
+        (product['selling_price'] as num?)?.toDouble() ?? 0;
+
+    final int quantity =
+        (product['quantity'] as num?)?.toInt() ?? 0;
+
+    final double sellingValue = selling * quantity;
+    final double buyingValue = buying * quantity;
+    final double profit = sellingValue - buyingValue;
+
+    String detailText = '';
+
+    if (reportKey == 'totalProducts') {
+      detailText =
+          'Quantity: $quantity\n'
+          'Selling Price: ${money(selling)}';
+    } else if (reportKey == 'sellingValue') {
+      detailText =
+          'Quantity: $quantity\n'
+          'Selling Price: ${money(selling)}\n'
+          'Stock Selling Value: ${money(sellingValue)}';
+    } else if (reportKey == 'buyingValue') {
+      detailText =
+          'Quantity: $quantity\n'
+          'Buying Price: ${money(buying)}\n'
+          'Stock Buying Value: ${money(buyingValue)}';
+    } else if (reportKey == 'profit') {
+      detailText =
+          'Quantity: $quantity\n'
+          'Buying Value: ${money(buyingValue)}\n'
+          'Selling Value: ${money(sellingValue)}\n'
+          'Potential Profit: ${money(profit)}';
+    } else if (reportKey == 'lowStock') {
+      detailText =
+          'Available Stock: $quantity\n'
+          'Selling Price: ${money(selling)}';
+    }
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Colors.grey.shade300,
+        ),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 45,
-            height: 45,
-            decoration: BoxDecoration(
-              color: Colors.deepPurple.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              icon,
-              color: Colors.deepPurple,
-            ),
+          const Icon(
+            Icons.inventory_2_outlined,
+            color: Colors.deepPurple,
           ),
 
-          const SizedBox(width: 15),
+          const SizedBox(width: 12),
 
           Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
 
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: valueColor ?? Colors.deepPurple,
+                const SizedBox(height: 5),
+
+                Text(
+                  detailText,
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                    height: 1.4,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -137,250 +332,96 @@ class _ReportsScreenState extends State<ReportsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Reports"),
+        title: const Text('Reports'),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
-
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: loadReport,
-          ),
-        ],
       ),
 
       body: loading
           ? const Center(
               child: CircularProgressIndicator(),
             )
-          : errorMessage != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.error_outline,
-                          color: Colors.red,
-                          size: 50,
-                        ),
-
-                        const SizedBox(height: 15),
-
-                        const Text(
-                          "Unable to load report",
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
+          : RefreshIndicator(
+              onRefresh: loadReport,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(15),
+                      child: Column(
+                        crossAxisAlignment:
+                            CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Inventory Report',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                        ),
 
-                        const SizedBox(height: 10),
+                          const SizedBox(height: 5),
 
-                        Text(
-                          errorMessage!,
-                          textAlign: TextAlign.center,
-                        ),
+                          Text(
+                            'Tap any report to view details',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
 
-                        const SizedBox(height: 20),
+                          const SizedBox(height: 15),
 
-                        ElevatedButton.icon(
-                          onPressed: loadReport,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text("Try Again"),
-                        ),
-                      ],
+                          // TOTAL PRODUCTS
+                          reportRow(
+                            title: 'Total Products',
+                            value: totalProducts.toString(),
+                            icon: Icons.inventory_2,
+                            reportKey: 'totalProducts',
+                          ),
+
+                          // STOCK SELLING VALUE
+                          reportRow(
+                            title: 'Stock Selling Value',
+                            value: money(stockSellingValue),
+                            icon: Icons.sell,
+                            reportKey: 'sellingValue',
+                          ),
+
+                          // STOCK BUYING VALUE
+                          reportRow(
+                            title: 'Stock Buying Value',
+                            value: money(stockBuyingValue),
+                            icon: Icons.shopping_cart,
+                            reportKey: 'buyingValue',
+                          ),
+
+                          // POTENTIAL PROFIT
+                          reportRow(
+                            title: 'Potential Profit',
+                            value: money(potentialProfit),
+                            icon: Icons.trending_up,
+                            reportKey: 'profit',
+                          ),
+
+                          // LOW STOCK
+                          reportRow(
+                            title: 'Low Stock Products',
+                            value: lowStock.toString(),
+                            icon: Icons.warning_amber,
+                            reportKey: 'lowStock',
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                )
-              : RefreshIndicator(
-                  onRefresh: loadReport,
-
-                  child: ListView(
-                    padding: const EdgeInsets.all(16),
-
-                    children: [
-                      // HEADER
-                      const Text(
-                        "Business Report",
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-
-                      const SizedBox(height: 5),
-
-                      const Text(
-                        "Current inventory summary",
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: Colors.grey,
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // ONE MAIN REPORT CARD
-                      Card(
-                        elevation: 5,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-
-                          child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-
-                            children: [
-                              // CARD TITLE
-                              Row(
-                                children: [
-                                  Container(
-                                    width: 50,
-                                    height: 50,
-                                    decoration: BoxDecoration(
-                                      color: Colors.deepPurple,
-                                      borderRadius:
-                                          BorderRadius.circular(14),
-                                    ),
-                                    child: const Icon(
-                                      Icons.bar_chart,
-                                      color: Colors.white,
-                                      size: 28,
-                                    ),
-                                  ),
-
-                                  const SizedBox(width: 15),
-
-                                  const Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        "Inventory Report",
-                                        style: TextStyle(
-                                          fontSize: 20,
-                                          fontWeight:
-                                              FontWeight.bold,
-                                        ),
-                                      ),
-
-                                      SizedBox(height: 3),
-
-                                      Text(
-                                        "Live data from Supabase",
-                                        style: TextStyle(
-                                          color: Colors.grey,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-
-                              const SizedBox(height: 20),
-
-                              const Divider(),
-
-                              // TOTAL PRODUCTS
-                              reportRow(
-                                icon: Icons.inventory_2,
-                                title: "Total Products",
-                                value: "$totalProducts",
-                              ),
-
-                              const Divider(),
-
-                              // STOCK VALUE
-                              reportRow(
-                                icon: Icons.payments,
-                                title: "Stock Selling Value",
-                                value: formatMoney(stockValue),
-                              ),
-
-                              const Divider(),
-
-                              // COST VALUE
-                              reportRow(
-                                icon: Icons.shopping_cart,
-                                title: "Stock Buying Value",
-                                value: formatMoney(totalCostValue),
-                              ),
-
-                              const Divider(),
-
-                              // POTENTIAL PROFIT
-                              reportRow(
-                                icon: Icons.trending_up,
-                                title: "Potential Profit",
-                                value: formatMoney(potentialProfit),
-                                valueColor: Colors.green,
-                              ),
-
-                              const Divider(),
-
-                              // LOW STOCK
-                              reportRow(
-                                icon: Icons.warning_amber,
-                                title: "Low Stock Products",
-                                value: "$lowStock",
-                                valueColor: lowStock > 0
-                                    ? Colors.red
-                                    : Colors.green,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // INFORMATION CARD
-                      Card(
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15),
-                        ),
-
-                        child: Padding(
-                          padding: const EdgeInsets.all(18),
-
-                          child: Row(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-
-                            children: [
-                              const Icon(
-                                Icons.info_outline,
-                                color: Colors.deepPurple,
-                              ),
-
-                              const SizedBox(width: 12),
-
-                              Expanded(
-                                child: Text(
-                                  "This report is calculated from the "
-                                  "current products stored in Supabase. "
-                                  "Pull down to refresh the information.",
-                                  style: TextStyle(
-                                    color: Colors.grey.shade700,
-                                    height: 1.4,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                    
-                
-                  )],
-                  ),
-                ),
+                ],
+              ),
+            ),
     );
   }
 }
